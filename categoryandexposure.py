@@ -7,7 +7,8 @@ from nelson_siegel_svensson.calibrate import calibrate_nss_ols,calibrate_ns_ols
 from scipy.optimize import lsq_linear
 
 #set of indexes that all calculations will be made against
-indexTickers = ['QQQ','SPY','DIA','IWM','XLF','IAT','IAI','VGT']
+#indexTickers = ['QQQ','SPY','DIA','IWM','XLF','IAT','IAI','VGT']
+indexTickers = ['QQQ','SPY','DIA','IWM']
 #EOD data of all tickers
 eodDataFile = 'EOD_20210527.csv'
 
@@ -24,11 +25,14 @@ def sectorCount(filename,resultfile):
     for index, row in portfolio.iterrows():
         symbol = row['Symbol']
         currPrice = row['Current Price']
+        
         totalInv = 0
         if isinstance(currPrice,str):
             if(currPrice[-1]=='M'):
                 currPrice = float(currPrice[:currPrice.index('.')+3].replace(',',''))
                 totalInv = currPrice*row['Current Quantity']
+            else:
+                totalInv = float(currPrice.replace(',',''))*float(row['Current Quantity'])
         else:
             if(isinstance(row['Current Price'],float)):
                 totalInv = float(row['Current Quantity']) * float(row['Current Price'])
@@ -181,14 +185,14 @@ def indexBetas(indexEODFile,resultfile):
     results.columns=['Symbol']
     results.to_csv('indextickers.csv')
 
-    betas('indextickers.csv',indexEODFile,resultfile)
+    betas('indextickers.csv',resultfile,indexEODFile)
 
 #calculate portfolio exposure to each industry and sector 
 #portfoliofile: file name of portfolio
 #portcategories: resultfile of sectorCount()
 #betas: resultfile of betas()
 #resultfile: file name to save results to
-def netbetas(portfoliofile,portcategories,betas,resultfile):
+def netBetas(portfoliofile,portcategories,betas,resultfile):
     results = pd.DataFrame(columns = ['ticker','sector','industry'])
     for index in indexTickers:
         results[index+'3m_b'] = None
@@ -215,7 +219,12 @@ def netbetas(portfoliofile,portcategories,betas,resultfile):
         if(isinstance(portfolioRow['Current Price'],float)):
             totalInv = float(portfolioRow['Current Quantity']) * float(portfolioRow['Current Price'])
         else:
-            price = portfolioRow['Current Price'].item()
+            try:
+                price = portfolioRow['Current Price'].iloc[0]
+            except:
+                print(portfolioRow)
+                print((portfolioRow['Current Price']))
+                exit()
             totalInv = float(portfolioRow['Current Quantity']) * float(price.replace(',','')) #quant is int, price is string???
 
         currSector = categoryRow['sector'].values[0]
@@ -339,12 +348,8 @@ def cov(portfoliofile,indexBetasFile,resultfile,portfolioEODFile=eodDataFile,ind
             lb = np.append(lb,-0.7)
             ub = np.append(ub,0.7)
 
-        try:        
-            res3m = lsq_linear(np.transpose(data3mresid),y3m.flatten(),bounds=(lb,ub))
-            res1y = lsq_linear(np.transpose(data1yresid),y1y.flatten(),bounds=(lb,ub))
-        except:
-            print(np.transpose(data3mresid).shape)
-            print(y3m.shape)
+        res3m = lsq_linear(np.transpose(data3mresid),y3m.flatten(),bounds=(lb,ub))
+        res1y = lsq_linear(np.transpose(data1yresid),y1y.flatten(),bounds=(lb,ub))
 
         s1 = pd.Series([symbol],index=['ticker'])
 
@@ -399,17 +404,14 @@ def residNetInv(residfile,portfoliofile,portcategories,resultfile):
             print(symbol, 'not found in categories file ', portcategories)
             continue
 
-        try:
-            currPrice = portfolioRow['Current Price'].item()
-        except:
-            print(portfolioRow['Current Price'])
-            print(type(portfolioRow['Current Price']))
-            exit()
+        currPrice = portfolioRow['Current Price'].item()
 
         if isinstance(currPrice,str):
             if(currPrice[-1]=='M'):
                 currPrice = float(currPrice[:currPrice.index('.')+3].replace(',',''))
                 totalInv = currPrice*portfolioRow['Current Quantity']
+            else:
+                totalInv = float(currPrice.replace(',',''))*portfolioRow['Current Quantity']
         else:
             if(isinstance(portfolioRow['Current Price'],float)):
                 totalInv = float(portfolioRow['Current Quantity']) * float(portfolioRow['Current Price'])
@@ -502,149 +504,6 @@ def get_portfolioeod(portfoliofile,outputfile):
     results.columns = ['ticker','date','open','high','low','close','volume','dividend','split','adj_open','adj_high','adj_low','adj_close','adj_volume']
     results.to_csv(outputfile)
 
-
-#decomposes entries in matrix into linear composition of eigen vectors, prints eigen vectors
-#ie, calculates loading factors
-def svd(filename, resultfile = 'yieldsvdnodiff.csv'):
-    data = pd.read_csv(filename)
-    orig = np.array(data.copy())
-
-    data = data.iloc[:,1:].to_numpy()
-    
-    AtA = np.matmul(data.transpose(),data)
-
-    evalues, evectors = geteigen(AtA,numvectors = 5, numiterations=10)
-    results = np.zeros((data.shape[0],evectors.shape[0]+1))
-
-    for d in range (0,data.shape[0]):
-        est = np.zeros(data.shape[1])
-        coef = np.zeros(evectors.shape[0])
-        for i in range(0,evectors.shape[0]):
-            coef[i] = np.dot(data[d],evectors[i])
-            est += (np.dot(data[d],evectors[i]))*evectors[i]
-        coef = np.append(coef,np.sum((data[d]-est)**2))
-        results[d] = coef
-
-    
-    df = pd.DataFrame(data=results)
-    dates = pd.DataFrame(data=orig[:,0])
-    df['date'] = dates
-
-    df.to_csv(resultfile,index=False)
-
-    print(evectors)
-
-#performs power method to find SVD
-#A: matrix to perform SVD on
-#numvectors: number of eigen vectors to obtain
-#numiterations: number of interations for power method to perform
-def geteigen(A,numvectors = 3, numiterations=10):
-    evalues = np.zeros(numvectors)
-    evectors = np.empty((numvectors,A.shape[1]))
-    A_next = A
-
-    for v in range(0,numvectors):
-        b = np.random.rand(A_next.shape[1])
-        b = b/np.linalg.norm(b)
-
-        for i in range(0,numiterations):
-            b1 = A_next.dot(b)
-            b1norm = np.linalg.norm(A_next.dot(b))
-            b = b1 / b1norm
-        
-        eigenval = (np.matmul(A_next,b)/b)[0]
-        evectors[v] = b
-
-        bt = np.array([b])
-        A_next = A_next-eigenval*(bt.transpose()@bt)
-
-        evalues[v] = eigenval
-
-    return evalues, evectors
-
-#calculates correlation between 5 day difference of each loading factor and specified tickers on rolling 1 year window
-#yieldfile: result of svd()
-#indexesfile: EOD file containing data for indexes, defaults to full EOD file
-def yieldvsindex(yieldfile,indexfile=eodDataFile):
-    tickers = ['SPY','DIA','QQQ','XLF','IAT','IAI']
-    yielddata = pd.read_csv(yieldfile)
-    yielddata['date'] = pd.to_datetime(yielddata['date'])
-    indexdata = pd.read_csv(indexfile)
-    indexdata['date'] = pd.to_datetime(indexdata['date'])
-
-    results = pd.DataFrame()
-    for ticker in tickers:
-        results[ticker+'corr'] = None
-
-    dayoffset = 5
-
-    yielddata.loc[:, yielddata.columns != 'date'] = yielddata.loc[:, yielddata.columns != 'date'].diff(dayoffset)
-
-    #Match dates
-    start1y = '2005-5-27'
-    yielddata3m = yielddata.loc[((yielddata['date']>start1y)&(yielddata['date']<=end))]
-    yielddata3m=yielddata3m.reset_index(drop=True)
-    indexdata3m = pd.DataFrame(columns=['ticker','date','close'])
-
-    for index,row in yielddata3m.iterrows():
-        currdate = row['date']
-        for ticker in tickers:
-            match = indexdata.loc[(indexdata['ticker']==ticker)&(indexdata['date']==currdate)]
-            if match.empty:
-                yielddata3m=yielddata3m.drop(index)
-                break
-            else:
-                indexdata3m=indexdata3m.append({'ticker':ticker,'date':currdate,'close':match['close'].item()},ignore_index=True)
-
-    batchdays = 253
-    rowcounter = -1 
-    print(yielddata3m.iloc[0].loc['date'])
-    print(yielddata3m.iloc[-1].loc['date'])
-    for coef in range(0,len(yielddata.columns)-2):
-        x = yielddata3m.iloc[:,coef].to_numpy().reshape(-1,1)
-        x1 = np.zeros(x.shape[0])
-        for i in range(0,x.shape[0]):
-            x1[i]=x[i,0]
-        corr = pd.DataFrame()
-        x1=x1.reshape(-1,1)
-
-        rowcounter = rowcounter+1
-        offset = 0
-        for ticker in tickers:
-            y = indexdata3m.loc[(indexdata3m['ticker']==ticker),'close'].to_numpy().reshape(-1,1)
-            y1 = np.zeros(y.shape[0])
-            for i in range(0,y.shape[0]):
-                y1[i]=y[i,0]
-            y1=y1.reshape(-1,1)
-            
-            rowcounter = rowcounter - offset
-            offset = 0
-            
-            for b in range (0,yielddata3m.shape[0]-batchdays-1):
-                try:
-                    startday = yielddata3m.iloc[b,:].loc['date'].date()
-                    endday = yielddata3m.iloc[b+batchdays,:].loc['date'].date()
-                except:
-                    print('Error: date out of range')
-                    exit()
-
-                dataindex = 'lf'+str(coef)+':'+str(startday)+'-'+str(endday)
-
-                x1curr = x1[b:b+batchdays]
-                y1curr = y1[b:b+batchdays]
-
-                corr['x'] = x1curr.flatten()
-                corr['y'] = y1curr.flatten()
-                corrm = corr.corr(method='pearson')
-
-                results.loc[rowcounter,ticker+'corr'] = corrm.iloc[0,1]
-                results.loc[rowcounter,['range']] = dataindex
-
-                rowcounter = rowcounter+1
-                offset = offset+1
-    
-    results.to_csv('yieldvsindexrolling.csv')
-
 #get certain piece of data(for debugging)
 def get_data():
     file = pd.read_csv('indexes.csv')
@@ -658,7 +517,7 @@ def get_data():
 
 
 def main():
-    portfolio = 'MS.csv'
+    portfolio = 'sampleport.csv'
 
     #get_data()
     #svd('dailytreasury.csv')
@@ -672,10 +531,11 @@ def main():
     #indexBetas('indexes.csv','indexbetas.csv')
 
     #sectorCount(portfolio,'MSsectorcount.csv')
-    #betas(portfolio,'MSportfolioeod.csv','MSbetas.csv')
-    #netbetas(portfolio,'sectorcount.csv', 'betas.csv','netbetastry.csv')
-    #cov(portfolio,'MSportfolioeod.csv','MSbetas.csv','indexes.csv','indexbetas.csv','MSresidbetasconstrainQQQ.csv')
-    #residNetInv('MSresidbetasconstrainQQQ.csv',portfolio,'MSsectorcount.csv','MSresidNetInvconstrainQQQ.csv')
+    #betas(portfolio,'MSbetas.csv','MSportfolioeod.csv')
+    #netbetas(portfolio,'sectorcount.csv', 'MSbetas.csv','netbetas.csv')
+    #cov(portfoliofile,indexBetasFile,resultfile,portfolioEODFile=eodDataFile,indexesfile=eodDataFile)
+    #cov(portfolio,'indexbetas.csv','cov.csv', 'MSportfolioeod.csv','indexes.csv')
+    residNetInv('cov.csv',portfolio,'MSsectorcount.csv','residNetInv.csv')
 
 if __name__ == '__main__':
     main()
